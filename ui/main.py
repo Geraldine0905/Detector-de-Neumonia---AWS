@@ -8,9 +8,11 @@ from datetime import datetime
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from flask import Flask, render_template, request, redirect, url_for, Response, send_file
+from flask import Flask, render_template, request, redirect, url_for, Response, send_file, jsonify
 from PIL import Image
 import numpy as np
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.units import cm
@@ -29,6 +31,72 @@ Path(app.config["UPLOAD_FOLDER"]).mkdir(parents=True, exist_ok=True)
 Path(app.config["HEATMAP_FOLDER"]).mkdir(parents=True, exist_ok=True)
 
 detector = PneumoniaDetector(model_path="models/conv_MLP_84.h5")
+
+# ── Mapeo de etiquetas internas → resultado clínico ──────────────────────────
+RESULTADO_MAP = {"normal": "Normal", "bacteriana": "Neumonía", "viral": "Neumonía"}
+
+
+# ── Conexión a PostgreSQL ─────────────────────────────────────────────────────
+def get_db_connection():
+    """Devuelve una conexión a PostgreSQL usando variables de entorno."""
+    return psycopg2.connect(
+        host=os.environ.get("DB_HOST", "localhost"),
+        port=int(os.environ.get("DB_PORT", 5432)),
+        dbname=os.environ.get("DB_NAME", "neumonia"),
+        user=os.environ.get("DB_USER", "postgres"),
+        password=os.environ.get("DB_PASSWORD", "postgres"),
+    )
+
+
+def init_db():
+    """Crea la tabla de predicciones si no existe."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS predicciones (
+                id                  SERIAL PRIMARY KEY,
+                imagen_nombre       VARCHAR(255) NOT NULL,
+                resultado           VARCHAR(50)  NOT NULL,
+                porcentaje_confianza NUMERIC(6,2) NOT NULL,
+                fecha_hora          TIMESTAMP    NOT NULL DEFAULT NOW()
+            );
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("[DB] Tabla 'predicciones' lista.")
+    except Exception as e:
+        print(f"[DB] Advertencia: no se pudo inicializar la base de datos: {e}")
+
+
+def save_prediction(imagen_nombre: str, resultado: str, confianza: float):
+    """Guarda una predicción en la base de datos."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO predicciones (imagen_nombre, resultado, porcentaje_confianza, fecha_hora)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (imagen_nombre, resultado, round(confianza, 2), datetime.now()),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"[DB] Error al guardar predicción: {e}")
+
+
+# Inicializar DB al arrancar
+init_db()
+
+
+@app.route("/health")
+def health():
+    """Health check para el Application Load Balancer de AWS."""
+    return jsonify({"status": "ok"}), 200
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -51,6 +119,10 @@ def index():
         patient_name = request.form.get("patient_name", "")
         prob_value   = result.probability
         prob_class   = "danger" if prob_value > 70 else "ok"
+
+        # Guardar predicción en la base de datos
+        resultado_clinico = RESULTADO_MAP.get(result.label, result.label)
+        save_prediction(unique_name, resultado_clinico, prob_value)
 
         # Guardar heatmap — result.heatmap es numpy array uint8 (H,W,3)
         heatmap_name = f"heatmap_{unique_name.replace(ext, '.png')}"
@@ -255,4 +327,4 @@ def export_csv():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=8000, debug=False)

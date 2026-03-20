@@ -1,0 +1,46 @@
+# ── docker-compose.instance1.yml ─────────────────────────────────────────────
+# Instancia EC2 en us-east-2a
+# Contiene: app PneumoScan + base de datos PostgreSQL
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  db:
+    image: postgres:15
+    container_name: neumonia_db
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-neumonia}
+      POSTGRES_USER: ${POSTGRES_USER:-neumonia_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"          # accesible desde instancia 2 via IP privada
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-neumonia_user} -d ${POSTGRES_DB:-neumonia}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    image: lamarck558/pneumoscan:latest    # reemplaza TU_USUARIO con tu Docker Hub username
+    container_name: neumonia_app
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-neumonia}
+      DB_USER: ${POSTGRES_USER:-neumonia_user}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - ./models:/app/models:ro           # modelo Keras montado como solo lectura
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+    driver: local

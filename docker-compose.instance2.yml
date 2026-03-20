@@ -1,0 +1,22 @@
+# ── docker-compose.instance2.yml ─────────────────────────────────────────────
+# Instancia EC2 en us-east-2b
+# Contiene: solo app PneumoScan
+# Se conecta a la base de datos de la instancia 1 por IP privada
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  app:
+    image: lamarck558/pneumoscan:latest    # reemplaza TU_USUARIO con tu Docker Hub username
+    container_name: neumonia_app
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      DB_HOST: ${DB_HOST:-10.0.133.163}       # IP privada de la instancia 1 (actualiza este valor)
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-neumonia}
+      DB_USER: ${POSTGRES_USER:-neumonia_user}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - ./models:/app/models:ro            # modelo Keras montado como solo lectura
