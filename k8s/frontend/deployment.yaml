@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: lamarck558/pneumoscan-frontend:latest
+          image: 624668862069.dkr.ecr.us-east-1.amazonaws.com/pneumoscan-frontend:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 80

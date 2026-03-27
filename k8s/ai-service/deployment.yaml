@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
         - name: ai-service
-          image: lamarck558/pneumoscan-ai:latest
+          image: 624668862069.dkr.ecr.us-east-1.amazonaws.com/pneumoscan-ai:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
@@ -31,15 +31,12 @@ spec:
                 name: pneumoscan-config
           resources:
             requests:
-              memory: "2Gi"
+              memory: "512Mi"
               cpu: "500m"
             limits:
-              memory: "4Gi"
+              memory: "1500Mi"
               cpu: "2000m"
-          volumeMounts:
-            - name: model-storage
-              mountPath: /app/models
-              readOnly: true
+          # Model is baked into the image at /app/models/conv_MLP_84.h5
           # TF model loading takes ~30-60 s — give it time before routing traffic
           livenessProbe:
             httpGet:
@@ -55,7 +52,3 @@ spec:
             initialDelaySeconds: 60
             periodSeconds: 15
             failureThreshold: 3
-      volumes:
-        - name: model-storage
-          persistentVolumeClaim:
-            claimName: model-pvc

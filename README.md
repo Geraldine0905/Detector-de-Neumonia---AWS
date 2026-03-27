@@ -1,17 +1,17 @@
 <div align="center">
 
-# 🫁 PneumoScan
+# 🫁 PneumoScan — Microservicios en Amazon EKS
 
-### Sistema de Apoyo al Diagnóstico de Neumonía mediante Deep Learning
+### Práctica 5: Migración a Arquitectura de Microservicios
 
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
 [![TensorFlow](https://img.shields.io/badge/TensorFlow-2.20-FF6F00?style=flat&logo=tensorflow&logoColor=white)](https://tensorflow.org)
 [![Flask](https://img.shields.io/badge/Flask-3.0-000000?style=flat&logo=flask&logoColor=white)](https://flask.palletsprojects.com)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-336791?style=flat&logo=postgresql&logoColor=white)](https://postgresql.org)
-[![Docker](https://img.shields.io/badge/Docker-Hub-2496ED?style=flat&logo=docker&logoColor=white)](https://hub.docker.com/r/lamarck558/pneumoscan)
-[![AWS](https://img.shields.io/badge/AWS-EC2%20%2B%20ALB-FF9900?style=flat&logo=amazon-aws&logoColor=white)](https://aws.amazon.com)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-EKS-326CE5?style=flat&logo=kubernetes&logoColor=white)](https://aws.amazon.com/eks/)
+[![AWS](https://img.shields.io/badge/AWS-ECR%20%2B%20EKS-FF9900?style=flat&logo=amazon-aws&logoColor=white)](https://aws.amazon.com)
 
-🌐 **Demo en vivo:** http://pneumonia-alb-2053601714.us-east-2.elb.amazonaws.com
+🌐 **Demo en vivo:** http://ad464dc9620d6408bab2b9f96b872e3b-437194755.us-east-1.elb.amazonaws.com
 
 </div>
 
@@ -19,610 +19,400 @@
 
 ## ¿Qué es PneumoScan?
 
-PneumoScan es una aplicación web de apoyo al diagnóstico médico que analiza radiografías de tórax usando una **Red Neuronal Convolucional (CNN)** entrenada con TensorFlow. En segundos, el sistema clasifica la imagen en una de tres categorías y genera un mapa de calor que le muestra al médico exactamente qué parte de la radiografía influyó en el diagnóstico.
+PneumoScan es un sistema de apoyo al diagnóstico médico que analiza radiografías de tórax con una **Red Neuronal Convolucional (CNN)** y clasifica la imagen en tres categorías: Neumonía Bacteriana, Neumonía Viral o Pulmón Normal. Genera además un mapa de calor **Grad-CAM** que indica qué zonas de la radiografía influyeron en el diagnóstico.
 
-El proyecto está desplegado en **AWS con alta disponibilidad**: dos instancias EC2 en distintas zonas de disponibilidad detrás de un Application Load Balancer, con una base de datos PostgreSQL que registra cada predicción realizada.
-
-### Funcionalidades principales
-
-- **Clasificación en 3 categorías:** Neumonía Bacteriana, Neumonía Viral, Pulmón Normal
-- **Explicabilidad con Grad-CAM:** mapa de calor superpuesto que indica qué regiones determinaron el diagnóstico
-- **Soporte multi-formato:** acepta imágenes DICOM (formato médico estándar), JPEG y PNG
-- **Persistencia en base de datos:** cada predicción queda registrada en PostgreSQL con timestamp
-- **Exportación de reportes:** descarga del diagnóstico en PDF con imagen y heatmap, o en CSV
-- **Alta disponibilidad en AWS:** dos réplicas de la app en zonas de disponibilidad distintas
+Esta versión migra la aplicación de un monolito Docker a **3 microservicios independientes** desplegados en **Amazon EKS** con alta disponibilidad (2 réplicas por pod).
 
 ---
 
 ## Índice
 
-1. [Cómo funciona el modelo](#cómo-funciona-el-modelo)
-2. [Arquitectura del código](#arquitectura-del-código)
-3. [Arquitectura AWS](#arquitectura-aws)
-4. [Ejecución local (sin Docker)](#ejecución-local-sin-docker)
-5. [Ejecución local con Docker](#ejecución-local-con-docker)
-6. [Despliegue en AWS](#despliegue-en-aws)
-7. [Base de datos](#base-de-datos)
-8. [API y endpoints](#api-y-endpoints)
-9. [Pruebas de alta disponibilidad](#pruebas-de-alta-disponibilidad)
-10. [Variables de entorno](#variables-de-entorno)
-11. [Stack tecnológico](#stack-tecnológico)
+1. [Arquitectura de microservicios](#arquitectura-de-microservicios)
+2. [Estructura del repositorio](#estructura-del-repositorio)
+3. [Prueba local con Docker Compose](#prueba-local-con-docker-compose)
+4. [Despliegue en Amazon EKS](#despliegue-en-amazon-eks)
+5. [Manifiestos Kubernetes](#manifiestos-kubernetes)
+6. [API de los microservicios](#api-de-los-microservicios)
+7. [Variables de entorno](#variables-de-entorno)
 
 ---
 
-## Cómo funciona el modelo
+## Arquitectura de microservicios
 
-Cuando el usuario sube una radiografía, el sistema ejecuta el siguiente pipeline de inferencia:
+### Los 3 microservicios
+
+| Microservicio | Tecnología | Réplicas | Puerto | Responsabilidad |
+|---|---|---|---|---|
+| `frontend` | Flask 3.0, psycopg2, requests | 2 | 80 | UI, llamadas HTTP al ai-service, persistencia en PostgreSQL |
+| `ai-service` | Flask 3.0, TensorFlow 2.20, OpenCV | 2 | 8000 | Inferencia CNN, Grad-CAM, devuelve heatmap en base64 |
+| `db` | PostgreSQL 15 | 1 | 5432 | Almacena historial de predicciones (PVC EBS 10Gi) |
+
+### Diagrama de arquitectura
 
 ```
-Imagen (DICOM / JPEG / PNG)
-        │
-        ▼
-┌─────────────────────────────────────────────────────┐
-│                   read_img.py                        │
-│  • DICOM → extrae pixel_array → normaliza a uint8   │
-│  • JPEG/PNG → lee con OpenCV → convierte a RGB       │
-└───────────────────┬─────────────────────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────────────────┐
-│                preprocess_img.py                     │
-│  1. Resize a 512×512 px                             │
-│  2. Conversión a escala de grises                   │
-│  3. CLAHE (mejora contraste local, clipLimit=2.0)   │
-│  4. Normalización a [0, 1]                          │
-│  5. Reshape → tensor (1, 512, 512, 1)               │
-└───────────────────┬─────────────────────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────────────────┐
-│              CNN — conv_MLP_84.h5                    │
-│  Salida: vector de probabilidades [bacteriana,       │
-│          normal, viral]                              │
-│  Clase predicha: argmax del vector                  │
-└─────────────┬───────────────┬───────────────────────┘
-              │               │
-              ▼               ▼
-    Etiqueta + confianza    grad_cam.py
-                            • GradientTape sobre capa conv10_thisone
-                            • Pesos = promedio de gradientes por canal
-                            • CAM = combinación lineal de activaciones
-                            • Heatmap JET superpuesto sobre la imagen original
-                                    │
-                                    ▼
-                          Resultado en la interfaz
-                          + guardado en PostgreSQL
+                          INTERNET
+                              │
+                              ▼
+              ┌───────────────────────────────┐
+              │   AWS Classic Load Balancer    │
+              │   (puerto 80, internet-facing) │
+              └──────────┬────────────────────┘
+                         │
+              ┌──────────▼──────────────────────────┐
+              │         EKS Cluster                  │
+              │     pneumoscan-eks (us-east-1)        │
+              │     3 nodos t3.small (2vCPU, 2GB)    │
+              │                                      │
+              │   ┌─────────────────────────────┐   │
+              │   │   namespace: pneumoscan      │   │
+              │   │                             │   │
+              │   │  ┌──────────┐  ┌──────────┐ │   │
+              │   │  │frontend-1│  │frontend-2│ │   │  ← 2 réplicas
+              │   │  │ :80      │  │ :80      │ │   │
+              │   │  └────┬─────┘  └────┬─────┘ │   │
+              │   │       └──────┬───────┘       │   │
+              │   │    HTTP POST /predict         │   │
+              │   │  ┌─────────────────────────┐ │   │
+              │   │  │  ai-service ×2 (:8000)  │ │   │  ← ClusterIP
+              │   │  │  Flask + TensorFlow      │ │   │
+              │   │  └─────────────────────────┘ │   │
+              │   │                             │   │
+              │   │  ┌─────────────────────────┐ │   │
+              │   │  │  db StatefulSet (:5432)  │ │   │  ← EBS 10Gi
+              │   │  │  PostgreSQL 15           │ │   │
+              │   │  └─────────────────────────┘ │   │
+              │   └─────────────────────────────┘   │
+              └──────────────────────────────────────┘
 ```
 
-### Grad-CAM — ¿por qué es importante?
+### Flujo de una predicción
 
-El modelo no es una caja negra. La técnica **Gradient-weighted Class Activation Mapping (Grad-CAM)** calcula, para cada predicción, qué regiones espaciales de la radiografía activaron más la neurona que tomó la decisión. El resultado es un mapa de calor en escala de colores JET (azul frío → rojo caliente) superpuesto a la radiografía original, lo que permite al médico validar si el modelo está mirando las zonas correctas.
+```
+1. Usuario sube radiografía → frontend (puerto 80)
+2. frontend → POST /predict con imagen → ai-service (ClusterIP :8000)
+3. ai-service:
+   a. Preprocesa imagen (resize 512x512, CLAHE, normalizar)
+   b. Inferencia CNN → label (bacteriana/normal/viral) + probability
+   c. Grad-CAM → heatmap PNG codificado en base64
+   d. Retorna JSON: {label, probability, heatmap_base64}
+4. frontend:
+   a. Decodifica heatmap_base64 → archivo en /tmp/heatmaps/
+   b. Guarda en PostgreSQL → tabla predicciones
+   c. Renderiza resultado en HTML
+```
 
 ---
 
-## Arquitectura del código
+## Estructura del repositorio
 
 ```
 uaoneumonia/
 │
-├── ui/                             ← Capa de presentación
-│   ├── main.py                     ← Flask app: rutas, DB, lógica de negocio
-│   ├── templates/
-│   │   └── index.html              ← Interfaz web (tema oscuro, drag & drop)
-│   └── static/
-│       ├── uploads/                ← Imágenes subidas por el usuario
-│       └── heatmaps/               ← Mapas de calor generados
+├── services/                       ← Microservicios
+│   ├── frontend/
+│   │   ├── app.py                  ← Flask sin TensorFlow
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt
+│   │   └── templates/
+│   │       └── index.html
+│   └── ai-service/
+│       ├── app.py                  ← Flask + TensorFlow, expone /predict /health
+│       ├── Dockerfile              ← modelo conv_MLP_84.h5 baked en imagen
+│       ├── requirements.txt
+│       └── src/                    ← módulos ML (integrator, load_model, grad_cam...)
 │
-├── src/                            ← Capa de dominio / lógica de IA
-│   ├── app/
-│   │   ├── integrator.py           ← Facade: orquesta todo el pipeline de inferencia
-│   │   └── models/
-│   │       └── load_model.py       ← Carga del modelo Keras (.h5)
-│   ├── data/
-│   │   └── read_img.py             ← Lectura de DICOM y JPEG/PNG → numpy array
-│   ├── features/
-│   │   └── preprocess_img.py       ← Resize, CLAHE, normalización → tensor
-│   └── visualizations/
-│       └── grad_cam.py             ← Generación del heatmap Grad-CAM
+├── k8s/                            ← Manifiestos Kubernetes
+│   ├── namespace.yaml
+│   ├── configmap.yaml
+│   ├── secret.yaml
+│   ├── frontend/
+│   │   ├── deployment.yaml         ← 2 réplicas, RollingUpdate, /health probes
+│   │   └── service.yaml            ← type: LoadBalancer, puerto 80
+│   ├── ai-service/
+│   │   ├── deployment.yaml         ← 2 réplicas, initialDelay 60s (TF load)
+│   │   └── service.yaml            ← type: ClusterIP, puerto 8000
+│   └── db/
+│       ├── statefulset.yaml        ← postgres:15, PVC volumeClaimTemplate
+│       └── service.yaml            ← type: ClusterIP, puerto 5432
 │
-├── models/                         ← (NO incluido en el repo)
-│   └── conv_MLP_84.h5              ← Modelo entrenado (~113 MB), montado como volumen
-│
-├── data/raw/                       ← Imágenes de ejemplo para pruebas
-│   ├── DICOM/
-│   └── JPG/
-│
-├── tests/                          ← Tests unitarios
-│   ├── test_read_img.py
-│   ├── test_preprocess_img.py
-│   └── test_grad_cam.py
-│
-├── Dockerfile                      ← Imagen de producción (gunicorn, puerto 8000)
-├── docker-compose.instance1.yml    ← Instancia 1: app + PostgreSQL
-├── docker-compose.instance2.yml    ← Instancia 2: solo app (DB remota)
-├── deploy.sh                       ← Script de despliegue automático en EC2
-├── requirements.txt
-└── README.md
-```
-
-### Patrón de diseño: Facade
-
-El módulo `integrator.py` implementa el patrón **Facade**: expone un único método `predict(file_path)` que internamente coordina la lectura, el preprocesamiento, la inferencia y la generación del Grad-CAM. La UI solo necesita instanciar `PneumoniaDetector` y llamar a `predict()`.
-
-```python
-detector = PneumoniaDetector(model_path="models/conv_MLP_84.h5")
-result = detector.predict("radiografia.dcm")
-
-print(result.label)       # "bacteriana" | "normal" | "viral"
-print(result.probability) # float 0–100
-print(result.heatmap)     # numpy array (512, 512, 3) — imagen RGB
+├── docker-compose.dev.yml          ← Prueba local de los 3 microservicios
+└── Vagrantfile                     ← VM Ubuntu con AWS CLI, kubectl, eksctl
 ```
 
 ---
 
-## Arquitectura AWS
+## Prueba local con Docker Compose
 
+Levanta los 3 microservicios localmente antes de desplegar en EKS.
+
+### Prerequisitos
+
+- Docker Desktop instalado y corriendo
+- El modelo en `models/conv_MLP_84.h5` (raíz del proyecto)
+
+### Pasos
+
+```bash
+# Clonar el repositorio (rama microservicios)
+git clone -b feature/microservices-eks https://github.com/L4M4rck/Detector-de-Neumonia---AWS.git
+cd Detector-de-Neumonia---AWS
+
+# Levantar los 3 servicios
+docker compose -f docker-compose.dev.yml up --build
 ```
-                           INTERNET
-                               │
-                               ▼
-              ┌────────────────────────────────┐
-              │   Application Load Balancer     │
-              │   pneumonia-alb (puerto 80)     │
-              │   Health check: GET /health     │
-              └──────────┬─────────────┬────────┘
-                         │             │
-            ┌────────────▼──┐    ┌─────▼─────────────┐
-            │  EC2 — AZ a   │    │  EC2 — AZ b        │
-            │  us-east-2a   │    │  us-east-2b        │
-            │  t3.small     │    │  t3.small          │
-            │               │    │                    │
-            │ ┌───────────┐ │    │  ┌───────────┐    │
-            │ │ neumonia_ │ │    │  │ neumonia_ │    │
-            │ │ app:8000  │ │    │  │ app:8000  │    │
-            │ └─────┬─────┘ │    │  └─────┬─────┘    │
-            │       │       │    │        │           │
-            │ ┌─────▼─────┐ │◄───┼────────┘           │
-            │ │neumonia_db│ │  IP privada instancia 1  │
-            │ │ postgres  │ │    │                    │
-            │ │  :5432    │ │    │                    │
-            │ └───────────┘ │    │                    │
-            └───────────────┘    └────────────────────┘
-              Subred privada        Subred privada
-              10.0.128.0/20         10.0.144.0/20
 
-VPC: 10.0.0.0/16
-  Subred pública AZ-a: 10.0.0.0/20    ← NAT Gateway + nodo ALB
-  Subred pública AZ-b: 10.0.16.0/20   ← nodo ALB
-  Subred privada AZ-a: 10.0.128.0/20  ← Instancia 1 (app + DB)
-  Subred privada AZ-b: 10.0.144.0/20  ← Instancia 2 (solo app)
+Esperar ~2 minutos (TensorFlow tarda en cargar el modelo). Cuando aparezca:
+```
+pneumoscan_ai | Listening at: http://0.0.0.0:8000
+```
+
+Abrir en el navegador: **http://localhost**
+
+```bash
+# Verificar salud de los servicios
+curl http://localhost/health          # frontend → {"status": "ok"}
+curl http://localhost:8000/health     # ai-service → {"status": "ok", "service": "ai-service"}
+
+# Ver logs del ai-service
+docker compose -f docker-compose.dev.yml logs -f ai-service
+
+# Detener
+docker compose -f docker-compose.dev.yml down
+```
+
+---
+
+## Despliegue en Amazon EKS
+
+### Prerequisitos
+
+- AWS CLI v2 instalado y configurado (`aws configure`)
+- kubectl v1.31+
+- eksctl v0.200+
+- Docker Desktop
+
+### Paso 1 — Crear repositorios ECR
+
+```bash
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+REGION=us-east-1
+
+aws ecr create-repository --repository-name pneumoscan-frontend --region $REGION
+aws ecr create-repository --repository-name pneumoscan-ai --region $REGION
+
+# Login a ECR
+aws ecr get-login-password --region $REGION | \
+  docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
+```
+
+### Paso 2 — Construir y subir imágenes
+
+```bash
+# Copiar el modelo al contexto del ai-service
+mkdir -p services/ai-service/models
+cp models/conv_MLP_84.h5 services/ai-service/models/
+
+# Build y push frontend
+docker build -t $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/pneumoscan-frontend:latest services/frontend/
+docker push $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/pneumoscan-frontend:latest
+
+# Build y push ai-service (~5 min por TensorFlow)
+docker build -t $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/pneumoscan-ai:latest services/ai-service/
+docker push $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/pneumoscan-ai:latest
+```
+
+### Paso 3 — Crear el cluster EKS
+
+> **Nota AWS Academy:** Solo son elegibles instancias Free Tier. Usar `t3.small` (2 vCPU, 2 GB RAM). No usar t3.medium ni t3.large.
+
+```bash
+eksctl create cluster \
+  --name pneumoscan-eks \
+  --region us-east-1 \
+  --version 1.34 \
+  --nodegroup-name pneumoscan-nodes \
+  --node-type t3.small \
+  --nodes 3 \
+  --nodes-min 2 \
+  --nodes-max 4 \
+  --managed
+```
+
+El proceso tarda ~15 minutos. eksctl configura `kubectl` automáticamente.
+
+> **Windows:** Si `kubectl` dice `executable aws not found`, editar `~/.kube/config` y cambiar `command: aws` por la ruta completa: `command: C:\Program Files\Amazon\AWSCLIV2\aws.exe`
+
+### Paso 4 — Instalar EBS CSI Driver
+
+El driver EBS CSI es necesario para que PostgreSQL pueda usar volúmenes persistentes.
+
+```bash
+# Instalar el addon
+aws eks create-addon \
+  --cluster-name pneumoscan-eks \
+  --addon-name aws-ebs-csi-driver \
+  --region us-east-1
+
+# Obtener el nombre del NodeInstanceRole
+NODE_ROLE=$(aws iam list-roles \
+  --query "Roles[?contains(RoleName,'NodeInstanceRole')].RoleName" \
+  --output text)
+
+# Adjuntar la política IAM necesaria
+aws iam attach-role-policy \
+  --role-name $NODE_ROLE \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+
+# Reiniciar el controlador para tomar los nuevos permisos
+kubectl rollout restart deployment/ebs-csi-controller -n kube-system
+
+# Verificar que el controlador está Running
+kubectl get pods -n kube-system -l app=ebs-csi-controller
+```
+
+### Paso 5 — Desplegar en Kubernetes
+
+```bash
+# Recursos base
+kubectl apply -f k8s/namespace.yaml
+kubectl apply -f k8s/configmap.yaml
+kubectl apply -f k8s/secret.yaml
+
+# Microservicios
+kubectl apply -f k8s/db/
+kubectl apply -f k8s/ai-service/
+kubectl apply -f k8s/frontend/
+```
+
+### Paso 6 — Verificar el despliegue
+
+```bash
+# Ver todos los pods (esperar ~2 min)
+kubectl get pods -n pneumoscan -w
+
+# Salida esperada:
+# NAME                          READY   STATUS    RESTARTS   AGE
+# ai-service-xxx-yyy   1/1   Running   0   3m
+# ai-service-xxx-zzz   1/1   Running   0   3m
+# db-0                 1/1   Running   0   3m
+# frontend-xxx-yyy     1/1   Running   0   3m
+# frontend-xxx-zzz     1/1   Running   0   3m
+
+# Obtener URL pública del LoadBalancer
+kubectl get service frontend-service -n pneumoscan
+# → EXTERNAL-IP: <nombre>.us-east-1.elb.amazonaws.com
+
+# Ver logs del ai-service (verificar que TF cargó el modelo)
+kubectl logs -n pneumoscan -l app=ai-service --tail=20
+```
+
+### Limpieza (evitar costos)
+
+```bash
+# Eliminar todos los recursos de Kubernetes
+kubectl delete namespace pneumoscan
+
+# Eliminar el cluster EKS
+eksctl delete cluster --name pneumoscan-eks --region us-east-1
+```
+
+---
+
+## Manifiestos Kubernetes
+
+### ConfigMap (`k8s/configmap.yaml`)
+
+Variables de entorno compartidas entre todos los pods:
+
+| Variable | Valor | Descripción |
+|---|---|---|
+| `AI_SERVICE_URL` | `http://ai-service:8000` | URL interna del ai-service |
+| `DB_HOST` | `db-service` | Nombre del servicio de base de datos |
+| `DB_PORT` | `5432` | Puerto PostgreSQL |
+| `DB_NAME` | `neumonia` | Nombre de la base de datos |
+| `DB_USER` | `neumonia_user` | Usuario de la base de datos |
+| `MODEL_PATH` | `/app/models/conv_MLP_84.h5` | Ruta del modelo en el contenedor |
+
+### Secret (`k8s/secret.yaml`)
+
+```bash
+# Crear un secret con contraseña segura (reemplazar en producción)
+kubectl create secret generic pneumoscan-secrets \
+  --from-literal=DB_PASSWORD=tu_password_seguro \
+  --from-literal=POSTGRES_PASSWORD=tu_password_seguro \
+  -n pneumoscan
 ```
 
 ### Decisiones de diseño
 
-| Decisión | Razón |
+| Decisión | Motivo |
 |---|---|
-| Instancias en **subredes privadas** | No expuestas directamente a internet — solo accesibles via ALB |
-| **Un solo contenedor PostgreSQL** en instancia 1 | Datos centralizados; ambas instancias escriben en la misma DB |
-| Modelo montado como **volumen externo** | El archivo .h5 de 113 MB no se incluye en la imagen Docker — se descarga por separado |
-| **2 workers Gunicorn** (no más) | TensorFlow no es thread-safe con múltiples workers que comparten el grafo del modelo |
-| `restart: always` en Docker Compose | Los contenedores se reinician solos si fallan o si la instancia EC2 reinicia |
-
-### Security Groups (mínimos privilegios)
-
-| Security Group | Aplicado a | Entrada permitida | Puerto |
-|---|---|---|---|
-| `pneumonia-lb-sg` | ALB | `0.0.0.0/0` (internet) | 80 |
-| `pneumonia-app-sg` | EC2 instancias | `pneumonia-lb-sg` | 8000 |
-| `pneumonia-app-sg` | EC2 instancias | `pneumonia-app-sg` | 5432 (DB) |
-| `bastion-sg` | Bastion Host | Tu IP específica | 22 |
-| `pneumonia-app-sg` | EC2 (SSH) | `bastion-sg` | 22 |
+| Modelo **baked en la imagen** del ai-service | Evita configurar EFS CSI driver (complejidad innecesaria). Imagen ~1.5 GB. |
+| Gunicorn con **1 worker sync, sin --preload** | TensorFlow no es fork-safe. El modelo carga dentro del worker, después del fork. |
+| `initialDelaySeconds: 60/90` en ai-service | TF tarda 30-60s en cargar el modelo; sin delay los probes matarían el pod. |
+| `RollingUpdate` con `maxUnavailable: 0` | Zero-downtime: siempre hay al menos 2 pods sirviendo tráfico. |
+| PostgreSQL como **StatefulSet** con PVC EBS | Garantiza identidad estable y datos persistentes entre reinicios. |
 
 ---
 
-## Ejecución local (sin Docker)
+## API de los microservicios
 
-### Requisitos
+### frontend (puerto 80)
 
-- Python 3.12
-- El archivo del modelo: `models/conv_MLP_84.h5`
-
-### Pasos
-
-```bash
-# 1. Clonar el repositorio
-git clone https://github.com/lamarck558/uaoneumonia.git
-cd uaoneumonia
-
-# 2. Crear entorno virtual
-python -m venv venv
-
-# En Windows:
-.\venv\Scripts\Activate.ps1
-# En Linux/Mac:
-source venv/bin/activate
-
-# 3. Instalar dependencias
-pip install -r requirements.txt
-pip install psycopg2-binary gunicorn
-
-# 4. Colocar el modelo en la carpeta models/
-mkdir -p models
-# Copiar conv_MLP_84.h5 a models/
-
-# 5. (Opcional) Levantar PostgreSQL local con Docker
-docker run -d --name postgres-local \
-  -e POSTGRES_DB=neumonia \
-  -e POSTGRES_USER=neumonia_user \
-  -e POSTGRES_PASSWORD=changeme \
-  -p 5432:5432 postgres:15
-
-# 6. Ejecutar la app
-python ui/main.py
-
-# La app estará disponible en: http://localhost:8000
-```
-
-> **Sin base de datos:** Si no configuras PostgreSQL, la app arranca igual. Los diagnósticos funcionan con normalidad; simplemente no se guardarán en la DB y verás un aviso en los logs.
-
----
-
-## Ejecución local con Docker
-
-Esta es la forma recomendada. Levanta la app y PostgreSQL en un solo comando.
-
-### Requisitos
-
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-- El archivo del modelo: `models/conv_MLP_84.h5`
-
-### Pasos
-
-```bash
-# 1. Clonar el repositorio
-git clone https://github.com/lamarck558/uaoneumonia.git
-cd uaoneumonia
-
-# 2. Colocar el modelo
-mkdir -p models
-# Copiar conv_MLP_84.h5 a models/
-
-# 3. Levantar app + PostgreSQL
-docker compose -f docker-compose.instance1.yml up -d
-
-# 4. Verificar que todo está corriendo
-docker compose -f docker-compose.instance1.yml ps
-```
-
-Salida esperada:
-
-```
-NAME           IMAGE                          STATUS
-neumonia_app   lamarck558/pneumoscan:latest   Up (healthy)   0.0.0.0:8000->8000/tcp
-neumonia_db    postgres:15                    Up (healthy)   0.0.0.0:5432->5432/tcp
-```
-
-```bash
-# 5. Verificar el health check
-curl http://localhost:8000/health
-# → {"status": "ok"}
-
-# 6. Abrir en el navegador
-# http://localhost:8000
-```
-
-```bash
-# Para detener los contenedores
-docker compose -f docker-compose.instance1.yml down
-
-# Para detener Y eliminar los datos de la DB
-docker compose -f docker-compose.instance1.yml down -v
-```
-
-### Build propio de la imagen
-
-Si modificas el código y quieres construir tu propia imagen:
-
-```bash
-docker build -t tu_usuario/pneumoscan:latest .
-docker push tu_usuario/pneumoscan:latest
-```
-
----
-
-## Despliegue en AWS
-
-### Requisitos previos en AWS
-
-1. **VPC** con 4 subredes: 2 públicas (para el ALB y NAT Gateway) y 2 privadas (para las instancias EC2), una en cada zona de disponibilidad
-2. **NAT Gateway** en la subred pública — permite a las instancias privadas descargar imágenes de Docker Hub
-3. **2 instancias EC2** Amazon Linux 2023 (`t3.small` mínimo) en las subredes privadas
-4. **Bastion Host** (opcional pero recomendado) para acceso SSH a las instancias privadas
-5. **Bucket S3** con el modelo subido: `aws s3 cp models/conv_MLP_84.h5 s3://tu-bucket/conv_MLP_84.h5`
-6. **Rol IAM** con `AmazonS3ReadOnlyAccess` asignado a las instancias EC2
-7. **Security Groups** configurados según la tabla de la sección anterior
-8. **Application Load Balancer** apuntando a las dos instancias
-
-### Paso 1 — Subir el modelo a S3
-
-```bash
-# Desde tu máquina local (requiere AWS CLI configurado)
-aws s3 cp models/conv_MLP_84.h5 s3://tu-bucket/conv_MLP_84.h5
-```
-
-### Paso 2 — Desplegar en Instancia 1 (us-east-2a)
-
-Conéctate a la instancia 1 (vía bastion o SSM) y ejecuta:
-
-```bash
-# Descargar el script de despliegue
-curl -O https://raw.githubusercontent.com/lamarck558/uaoneumonia/main/deploy.sh
-curl -O https://raw.githubusercontent.com/lamarck558/uaoneumonia/main/docker-compose.instance1.yml
-
-# Desplegar (ajusta la contraseña)
-INSTANCE=1 POSTGRES_PASSWORD=tu_password_seguro bash deploy.sh
-```
-
-El script automáticamente:
-- Instala Docker y Docker Compose Plugin
-- Crea el usuario `appuser` sin privilegios root
-- Agrega `appuser` al grupo `docker`
-- Descarga la imagen `lamarck558/pneumoscan:latest` desde Docker Hub
-- Levanta los contenedores `neumonia_app` y `neumonia_db`
-
-Luego copia el modelo:
-
-```bash
-# Desde tu máquina local
-scp -i tu-clave.pem -o ProxyJump=ubuntu@<IP_BASTION> \
-    models/conv_MLP_84.h5 \
-    ec2-user@<IP_PRIVADA_EC2_1>:/home/appuser/pneumoscan/models/
-```
-
-### Paso 3 — Desplegar en Instancia 2 (us-east-2b)
-
-```bash
-# Conectar a instancia 2 y ejecutar
-curl -O https://raw.githubusercontent.com/lamarck558/uaoneumonia/main/deploy.sh
-curl -O https://raw.githubusercontent.com/lamarck558/uaoneumonia/main/docker-compose.instance2.yml
-
-# Reemplaza 10.0.133.163 con la IP PRIVADA real de la instancia 1
-INSTANCE=2 DB_HOST=10.0.133.163 POSTGRES_PASSWORD=tu_password_seguro bash deploy.sh
-```
-
-Copiar el modelo a la instancia 2:
-
-```bash
-scp -i tu-clave.pem -o ProxyJump=ubuntu@<IP_BASTION> \
-    models/conv_MLP_84.h5 \
-    ec2-user@<IP_PRIVADA_EC2_2>:/home/appuser/pneumoscan/models/
-```
-
-### Paso 4 — Configurar el ALB
-
-En **AWS Console → EC2 → Load Balancers**:
-
-**Target Group:**
-- Protocol: HTTP | Port: **8000**
-- Health check path: `/health`
-- Healthy threshold: 2 | Interval: 30s
-- Registrar ambas instancias EC2
-
-**Load Balancer:**
-- Scheme: Internet-facing
-- Listener: HTTP:80 → Target Group
-- Subnets: seleccionar subnets **públicas** de us-east-2a y us-east-2b
-- Security Group: `pneumonia-lb-sg`
-
-### Verificar el despliegue
-
-```bash
-# Health check a través del ALB
-curl http://pneumonia-alb-2053601714.us-east-2.elb.amazonaws.com/health
-# → {"status": "ok"}
-
-# Ver estado de los contenedores en cada instancia
-sudo docker ps
-```
-
----
-
-## Base de datos
-
-La tabla `predicciones` se crea automáticamente cuando la app arranca por primera vez. No necesitas ejecutar ningún script SQL.
-
-### Esquema
-
-```sql
-CREATE TABLE predicciones (
-    id                   SERIAL PRIMARY KEY,
-    imagen_nombre        VARCHAR(255) NOT NULL,   -- UUID + extensión del archivo subido
-    resultado            VARCHAR(50)  NOT NULL,   -- "Normal" o "Neumonía"
-    porcentaje_confianza NUMERIC(6,2) NOT NULL,   -- Ej: 94.27
-    fecha_hora           TIMESTAMP    NOT NULL DEFAULT NOW()
-);
-```
-
-### Mapeo de clases
-
-El modelo clasifica internamente en 3 clases, que la app simplifica para la base de datos:
-
-| Clase interna | Guardado en DB | Descripción |
+| Método | Ruta | Descripción |
 |---|---|---|
-| `bacteriana` | `Neumonía` | Infiltrado bacteriano visible |
-| `viral` | `Neumonía` | Infiltrado viral visible |
-| `normal` | `Normal` | Sin signos de neumonía |
+| `GET` | `/` | Interfaz web principal |
+| `POST` | `/` | Enviar imagen para análisis |
+| `GET` | `/health` | Health check (para Load Balancer) |
+| `GET` | `/uploads/<filename>` | Servir imagen subida |
+| `GET` | `/heatmaps/<filename>` | Servir mapa de calor |
+| `GET` | `/export-pdf` | Descargar reporte en PDF |
+| `GET` | `/export-csv` | Descargar historial en CSV |
 
-### Consultas útiles
+### ai-service (puerto 8000, ClusterIP interno)
 
-```bash
-# Ver los últimos 10 diagnósticos
-docker exec -it neumonia_db psql -U neumonia_user -d neumonia \
-  -c "SELECT * FROM predicciones ORDER BY fecha_hora DESC LIMIT 10;"
-
-# Resumen estadístico
-docker exec -it neumonia_db psql -U neumonia_user -d neumonia \
-  -c "SELECT resultado, COUNT(*), ROUND(AVG(porcentaje_confianza),2) AS confianza_promedio
-      FROM predicciones GROUP BY resultado;"
-
-# Predicciones de las últimas 24 horas
-docker exec -it neumonia_db psql -U neumonia_user -d neumonia \
-  -c "SELECT * FROM predicciones WHERE fecha_hora > NOW() - INTERVAL '24 hours';"
-
-# Backup de la base de datos
-docker exec neumonia_db pg_dump -U neumonia_user neumonia > backup_$(date +%Y%m%d).sql
-```
-
----
-
-## API y endpoints
-
-| Método | Ruta | Descripción | Respuesta |
-|---|---|---|---|
-| `GET` | `/` | Interfaz web principal | HTML |
-| `POST` | `/` | Enviar imagen para análisis | HTML con resultado |
-| `GET` | `/health` | Health check para el ALB | `{"status": "ok"}` HTTP 200 |
-| `GET` | `/export-pdf` | Descargar reporte PDF | Archivo PDF |
-| `GET` | `/export-csv` | Descargar resultado CSV | Archivo CSV |
-
-### Parámetros del POST `/`
-
-| Campo | Tipo | Descripción |
+| Método | Ruta | Descripción |
 |---|---|---|
-| `image` | File | Radiografía (DICOM, JPEG, PNG) |
-| `patient_name` | String | Nombre completo del paciente |
-| `patient_id` | String | Cédula o ID del paciente |
+| `POST` | `/predict` | Recibe imagen (multipart), retorna JSON con diagnóstico y heatmap |
+| `GET` | `/health` | Health check del servicio de IA |
 
-### Parámetros del GET `/export-pdf`
+**Respuesta de `/predict`:**
 
-| Parámetro | Descripción |
-|---|---|
-| `patient_id` | Cédula del paciente |
-| `patient_name` | Nombre del paciente |
-| `label` | Diagnóstico (`bacteriana` / `normal` / `viral`) |
-| `probability` | Porcentaje de confianza |
-| `image` | Ruta relativa a la imagen subida |
-| `heatmap` | Ruta relativa al mapa de calor generado |
-
----
-
-## Pruebas de alta disponibilidad
-
-### Prueba 1 — Failover: una instancia cae
-
-```bash
-ALB="http://pneumonia-alb-2053601714.us-east-2.elb.amazonaws.com"
-
-# 1. Verificar que el sistema responde
-curl $ALB/health
-# → {"status": "ok"}
-
-# 2. Detener la instancia 1 desde AWS Console:
-#    EC2 → Instancias → pneumonia-app-1 → Estado de la instancia → Detener
-
-# 3. Esperar ~30 segundos (tiempo del health check del ALB)
-# 4. Verificar que el sistema SIGUE respondiendo (instancia 2 absorbe el tráfico)
-curl $ALB/health
-# → {"status": "ok"}  ✓ Alta disponibilidad confirmada
-
-# 5. Restaurar: EC2 → pneumonia-app-1 → Iniciar
+```json
+{
+  "label": "bacteriana",
+  "probability": 94.27,
+  "heatmap_base64": "iVBORw0KGgoAAAA..."
+}
 ```
-
-### Prueba 2 — Distribución de carga
-
-```bash
-ALB="http://pneumonia-alb-2053601714.us-east-2.elb.amazonaws.com"
-
-for i in $(seq 1 20); do
-  STATUS=$(curl -s -o /dev/null -w "%{http_code}" $ALB/health)
-  echo "Request $i → HTTP $STATUS"
-done
-```
-
-### Prueba 3 — Base de datos compartida entre instancias
-
-Sube radiografías desde la app varias veces (el ALB las distribuirá entre las dos instancias) y verifica que todos los registros están centralizados en la DB de la instancia 1:
-
-```bash
-# Conectar a instancia 1 y consultar
-docker exec -it neumonia_db psql -U neumonia_user -d neumonia \
-  -c "SELECT COUNT(*) AS total_predicciones, MIN(fecha_hora), MAX(fecha_hora) FROM predicciones;"
-```
-
-Si el `total` incrementa sin importar qué instancia atiende la petición, la arquitectura está funcionando correctamente.
 
 ---
 
 ## Variables de entorno
 
-| Variable | Descripción | Default |
+| Variable | Servicio | Descripción |
 |---|---|---|
-| `DB_HOST` | Host de PostgreSQL | `db` (instancia 1) / IP privada (instancia 2) |
-| `DB_PORT` | Puerto de PostgreSQL | `5432` |
-| `DB_NAME` | Nombre de la base de datos | `neumonia` |
-| `DB_USER` | Usuario de PostgreSQL | `neumonia_user` |
-| `DB_PASSWORD` | Contraseña de PostgreSQL | `changeme` |
-| `POSTGRES_DB` | Nombre DB (servicio postgres) | `neumonia` |
-| `POSTGRES_USER` | Usuario (servicio postgres) | `neumonia_user` |
-| `POSTGRES_PASSWORD` | Contraseña (servicio postgres) | `changeme` |
-
-> **Importante:** Cambia `DB_PASSWORD` y `POSTGRES_PASSWORD` antes de desplegar en producción. Nunca subas contraseñas reales al repositorio.
-
----
-
-## Stack tecnológico
-
-| Categoría | Tecnología | Uso |
-|---|---|---|
-| **IA / ML** | TensorFlow 2.20, Keras 3.13 | Inferencia de la CNN y Grad-CAM |
-| **Visión computacional** | OpenCV (cv2) | Preprocesamiento CLAHE, conversiones de color |
-| **Imágenes médicas** | pydicom | Lectura de archivos DICOM |
-| **Web** | Flask 3.0, Gunicorn | Servidor web de producción |
-| **Base de datos** | PostgreSQL 15, psycopg2 | Persistencia de predicciones |
-| **PDF** | ReportLab | Generación de reportes clínicos |
-| **Contenedores** | Docker, Docker Compose | Empaquetado y orquestación |
-| **Nube** | AWS EC2, ALB, VPC, S3 | Infraestructura de producción |
-| **Lenguaje** | Python 3.12 | Todo el backend |
-
----
-
-## Comandos de operación
-
-```bash
-# Ver logs en tiempo real
-sudo docker logs -f neumonia_app
-sudo docker logs -f neumonia_db
-
-# Estado de los contenedores
-sudo docker ps
-
-# Reiniciar solo la app (sin bajar la DB)
-cd /home/appuser/pneumoscan && sudo -u appuser docker compose restart app
-
-# Actualizar la app a la última versión de la imagen
-sudo docker pull lamarck558/pneumoscan:latest
-cd /home/appuser/pneumoscan && sudo -u appuser docker compose up -d --no-deps app
-
-# Acceder a la consola de PostgreSQL
-docker exec -it neumonia_db psql -U neumonia_user -d neumonia
-
-# Backup de la base de datos
-docker exec neumonia_db pg_dump -U neumonia_user neumonia > backup_$(date +%Y%m%d).sql
-```
+| `AI_SERVICE_URL` | frontend | URL del ai-service (`http://ai-service:8000`) |
+| `DB_HOST` | frontend | Host de PostgreSQL |
+| `DB_PORT` | frontend | Puerto de PostgreSQL (`5432`) |
+| `DB_NAME` | frontend, db | Nombre de la base de datos |
+| `DB_USER` | frontend, db | Usuario de PostgreSQL |
+| `DB_PASSWORD` | frontend | Contraseña de PostgreSQL |
+| `POSTGRES_PASSWORD` | db | Contraseña para el contenedor PostgreSQL |
+| `MODEL_PATH` | ai-service | Ruta del modelo `.h5` dentro del contenedor |
 
 ---
 
 <div align="center">
 
-**⚠ Aviso médico**
+**Aviso médico**
 
 Este sistema es una herramienta de apoyo al diagnóstico basada en inteligencia artificial.
 No reemplaza el criterio clínico de un médico especialista.
-Cualquier decisión médica debe ser tomada por un profesional de la salud calificado.
 
 ---
 
 Desarrollado como parte de la asignatura **Computación en la Nube**
-Universidad Autónoma de Occidente
+Universidad Autónoma de Occidente — Práctica 5
 
 </div>

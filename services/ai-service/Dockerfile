@@ -19,12 +19,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir gunicorn
 
-# Copy application and ML source modules
+# Copy application, ML source modules and trained model
 COPY app.py .
 COPY src/ ./src/
-
-# Model is never baked into the image — always mounted as a volume/PVC
-VOLUME ["/app/models"]
+COPY models/ ./models/
 
 EXPOSE 8000
 
