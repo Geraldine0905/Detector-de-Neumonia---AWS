@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-service
+  namespace: pneumoscan
+  labels:
+    app: ai-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ai-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0   # Zero-downtime: always keep 2 pods serving
+  template:
+    metadata:
+      labels:
+        app: ai-service
+    spec:
+      containers:
+        - name: ai-service
+          image: lamarck558/pneumoscan-ai:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: pneumoscan-config
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "500m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+          volumeMounts:
+            - name: model-storage
+              mountPath: /app/models
+              readOnly: true
+          # TF model loading takes ~30-60 s — give it time before routing traffic
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 3
+      volumes:
+        - name: model-storage
+          persistentVolumeClaim:
+            claimName: model-pvc

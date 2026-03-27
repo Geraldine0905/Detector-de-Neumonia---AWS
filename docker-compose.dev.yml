@@ -1,0 +1,72 @@
+# Local development compose — mirrors the Kubernetes architecture.
+# Usage:
+#   docker compose -f docker-compose.dev.yml up --build
+#
+# Prerequisites:
+#   - Place the model at ./models/conv_MLP_84.h5
+
+services:
+
+  # ── PostgreSQL ────────────────────────────────────────────────────
+  db:
+    image: postgres:15
+    container_name: pneumoscan_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: neumonia
+      POSTGRES_USER: neumonia_user
+      POSTGRES_PASSWORD: changeme
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U neumonia_user -d neumonia"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── AI Service ────────────────────────────────────────────────────
+  ai-service:
+    build:
+      context: services/ai-service
+    container_name: pneumoscan_ai
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      MODEL_PATH: /app/models/conv_MLP_84.h5
+      TF_CPP_MIN_LOG_LEVEL: "2"
+    volumes:
+      - ./models:/app/models:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s   # Allow TF model to load
+
+  # ── Frontend ──────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: services/frontend
+    container_name: pneumoscan_frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    environment:
+      AI_SERVICE_URL: http://ai-service:8000
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: neumonia
+      DB_USER: neumonia_user
+      DB_PASSWORD: changeme
+    depends_on:
+      db:
+        condition: service_healthy
+      ai-service:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+    driver: local

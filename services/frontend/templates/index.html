@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>PneumoScan — Detección de Neumonía</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@300;400;500&family=Sora:wght@300;400;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg:       #07090f;
+      --surface:  #0d1117;
+      --border:   rgba(255,255,255,0.07);
+      --accent:   #00e5c3;
+      --accent2:  #005cff;
+      --danger:   #ff4d6d;
+      --ok:       #00e5c3;
+      --text:     #e8eaf0;
+      --muted:    #5a6070;
+      --radius:   16px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Sora', sans-serif;
+      font-size: 15px;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ─── noise grain overlay ─── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+      pointer-events: none; z-index: 0;
+    }
+
+    /* ─── glowing blob bg ─── */
+    .blob {
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(120px);
+      opacity: 0.12;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .blob-1 { width: 600px; height: 600px; background: var(--accent2); top: -200px; left: -200px; }
+    .blob-2 { width: 400px; height: 400px; background: var(--accent);  bottom: -100px; right: -100px; }
+
+    /* ─── layout ─── */
+    .wrapper {
+      position: relative; z-index: 1;
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 40px 24px 80px;
+    }
+
+    /* ─── header ─── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 56px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .logo {
+      display: flex; align-items: center; gap: 14px;
+    }
+
+    .logo-icon {
+      width: 44px; height: 44px;
+      background: linear-gradient(135deg, var(--accent2), var(--accent));
+      border-radius: 12px;
+      display: grid; place-items: center;
+    }
+
+    .logo-icon svg { width: 22px; height: 22px; fill: #fff; }
+
+    .logo-text { font-family: 'DM Serif Display', serif; font-size: 22px; letter-spacing: -0.5px; }
+    .logo-text span { color: var(--accent); }
+
+    .badge {
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      background: rgba(0,229,195,0.08);
+      border: 1px solid rgba(0,229,195,0.2);
+      color: var(--accent);
+      padding: 5px 12px;
+      border-radius: 100px;
+      letter-spacing: 0.08em;
+    }
+
+    /* ─── hero title ─── */
+    .hero {
+      text-align: center;
+      margin-bottom: 56px;
+    }
+
+    .hero h1 {
+      font-family: 'DM Serif Display', serif;
+      font-size: clamp(32px, 5vw, 52px);
+      line-height: 1.1;
+      letter-spacing: -1px;
+      margin-bottom: 14px;
+    }
+
+    .hero h1 em {
+      font-style: italic;
+      color: var(--accent);
+    }
+
+    .hero p {
+      color: var(--muted);
+      font-weight: 300;
+      max-width: 480px;
+      margin: 0 auto;
+      line-height: 1.7;
+    }
+
+    /* ─── card ─── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    /* ─── main grid ─── */
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0;
+    }
+
+    @media (max-width: 700px) {
+      .main-grid { grid-template-columns: 1fr; }
+    }
+
+    /* ─── upload panel ─── */
+    .panel {
+      padding: 32px;
+      border-right: 1px solid var(--border);
+    }
+
+    .panel:last-child { border-right: none; }
+
+    .panel-label {
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      text-transform: uppercase;
+      margin-bottom: 16px;
+    }
+
+    /* ─── drop zone ─── */
+    .drop-zone {
+      border: 1.5px dashed rgba(255,255,255,0.12);
+      border-radius: 12px;
+      min-height: 260px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      position: relative;
+      overflow: hidden;
+      background: rgba(255,255,255,0.01);
+    }
+
+    .drop-zone:hover, .drop-zone.dragover {
+      border-color: var(--accent);
+      background: rgba(0,229,195,0.03);
+    }
+
+    .drop-zone img {
+      width: 100%; height: 100%;
+      object-fit: contain;
+      position: absolute; inset: 0;
+      border-radius: 12px;
+    }
+
+    .drop-icon {
+      width: 48px; height: 48px;
+      background: rgba(255,255,255,0.04);
+      border-radius: 50%;
+      display: grid; place-items: center;
+      margin-bottom: 14px;
+    }
+
+    .drop-icon svg { width: 22px; height: 22px; stroke: var(--muted); }
+
+    .drop-text { color: var(--muted); font-size: 13px; text-align: center; line-height: 1.6; }
+    .drop-text strong { color: var(--text); }
+    .drop-hint { font-size: 11px; color: var(--muted); margin-top: 6px; font-family: 'DM Mono', monospace; }
+
+    /* ─── form bottom ─── */
+    .form-row {
+      margin-top: 20px;
+      display: flex;
+      gap: 12px;
+      align-items: flex-end;
+    }
+
+    .field {
+      flex: 1;
+    }
+
+    label.field-label {
+      display: block;
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      margin-bottom: 7px;
+      text-transform: uppercase;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      color: var(--text);
+      font-family: 'DM Mono', monospace;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    input[type="text"]:focus {
+      border-color: var(--accent);
+    }
+
+    input[type="file"] { display: none; }
+
+    /* ─── button ─── */
+    .btn {
+      display: inline-flex;
+      align-items: center; justify-content: center;
+      gap: 8px;
+      padding: 11px 22px;
+      border-radius: 8px;
+      font-family: 'Sora', sans-serif;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity 0.2s, transform 0.15s;
+      white-space: nowrap;
+    }
+
+    .btn:active { transform: scale(0.97); }
+    .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent2), var(--accent));
+      color: #07090f;
+    }
+
+    .btn-ghost {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+
+    /* ─── result panel ─── */
+    .result-img-box {
+      border: 1.5px solid var(--border);
+      border-radius: 12px;
+      min-height: 260px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      background: rgba(255,255,255,0.01);
+    }
+
+    .result-img-box img {
+      width: 100%; height: 100%;
+      object-fit: contain;
+    }
+
+    .result-placeholder {
+      color: var(--muted);
+      font-size: 13px;
+      font-family: 'DM Mono', monospace;
+      text-align: center;
+    }
+
+    /* ─── verdict ─── */
+    .verdict-row {
+      margin-top: 20px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .verdict-box {
+      border-radius: 10px;
+      padding: 16px 18px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.02);
+    }
+
+    .verdict-box .vb-label {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+
+    .verdict-box .vb-value {
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.5px;
+    }
+
+    .verdict-box.positive { border-color: rgba(255,77,109,0.3); background: rgba(255,77,109,0.05); }
+    .verdict-box.positive .vb-value { color: var(--danger); }
+    .verdict-box.negative { border-color: rgba(0,229,195,0.3); background: rgba(0,229,195,0.05); }
+    .verdict-box.negative .vb-value { color: var(--ok); }
+
+    .prob-bar-wrap {
+      margin-top: 8px;
+      height: 3px;
+      background: rgba(255,255,255,0.07);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .prob-bar {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 1s ease;
+    }
+
+    .prob-bar--danger { background: var(--danger); }
+    .prob-bar--ok     { background: var(--ok); }
+
+    /* ─── footer bar ─── */
+    .card-footer {
+      padding: 18px 32px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .footer-info {
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      color: var(--muted);
+      margin-right: auto;
+    }
+
+    /* ─── flash / alert ─── */
+    .alert {
+      padding: 14px 20px;
+      border-radius: 10px;
+      font-size: 13px;
+      margin-bottom: 24px;
+      border: 1px solid;
+    }
+    .alert-info  { background: rgba(0,92,255,0.08);  border-color: rgba(0,92,255,0.25);  color: #7eb3ff; }
+    .alert-error { background: rgba(255,77,109,0.08); border-color: rgba(255,77,109,0.3); color: #ff8fa3; }
+
+    /* ─── disclaimer ─── */
+    .disclaimer {
+      text-align: center;
+      margin-top: 32px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.7;
+      font-family: 'DM Mono', monospace;
+    }
+
+    /* ─── spinner ─── */
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2px solid rgba(255,255,255,0.2);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    /* ─── entrance animation ─── */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .hero  { animation: fadeUp 0.5s ease both; }
+    .card  { animation: fadeUp 0.5s ease 0.1s both; }
+    header { animation: fadeUp 0.5s ease both; }
+  </style>
+</head>
+<body>
+  <div class="blob blob-1"></div>
+  <div class="blob blob-2"></div>
+
+  <div class="wrapper">
+    <header>
+      <div class="logo">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 15h-2v-6h2zm0-8h-2V7h2z"/></svg>
+        </div>
+        <div class="logo-text">Pneumo<span>Scan</span></div>
+      </div>
+      <span class="badge">APOYO DIAGNÓSTICO · v2.0</span>
+    </header>
+
+    <div class="hero">
+      <h1>Detección <em>rápida</em> de<br>neumonía por imagen</h1>
+      <p>Carga una radiografía de tórax (DICOM, JPEG o PNG) y el modelo generará un diagnóstico de apoyo con mapa de calor Grad-CAM.</p>
+    </div>
+
+    {% if error %}
+    <div class="alert alert-error">
+      Error al contactar el servicio de IA: <strong>{{ error }}</strong>. Verifica que el ai-service esté disponible.
+    </div>
+    {% endif %}
+
+    {% if label and patient_id %}
+    <div class="alert alert-info">
+      Análisis completado para <strong>{{ patient_name or '' }} — {{ patient_id }}</strong>. Revisa los resultados en el panel derecho.
+    </div>
+    {% endif %}
+
+    <div class="card">
+      <form method="POST" enctype="multipart/form-data" id="mainForm">
+        <div class="main-grid">
+
+          <!-- ── LEFT: upload ── -->
+          <div class="panel">
+            <div class="panel-label">01 — Datos del paciente</div>
+
+            <div class="form-row" style="margin-top:0; margin-bottom: 16px;">
+              <div class="field">
+                <label class="field-label" for="patientName">Nombre completo</label>
+                <input type="text" id="patientName" name="patient_name"
+                       placeholder="ej. Juan Pérez"
+                       value="{{ patient_name or '' }}" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="patientId">Cédula / ID</label>
+                <input type="text" id="patientId" name="patient_id"
+                       placeholder="ej. 10245887"
+                       value="{{ patient_id or '' }}" />
+              </div>
+            </div>
+
+            <div class="panel-label">02 — Imagen radiográfica</div>
+
+            <div class="drop-zone" id="dropZone" onclick="handleDropZoneClick()">
+              {% if image %}
+                <!-- Serve from dynamic /uploads/ route -->
+                <img src="/uploads/{{ image }}" alt="Radiografía cargada" />
+              {% else %}
+                <div class="drop-icon">
+                  <svg fill="none" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/></svg>
+                </div>
+                <p class="drop-text"><strong>Clic para seleccionar</strong><br>o arrastra tu archivo aquí</p>
+                <p class="drop-hint">DCM · JPEG · JPG · PNG</p>
+              {% endif %}
+            </div>
+
+            <input type="file" id="fileInput" name="image" accept=".dcm,.jpeg,.jpg,.png" required />
+            <p id="validationHint" style="display:none; color:var(--danger); font-family:'DM Mono',monospace; font-size:11px; margin-top:8px;">
+              ⚠ Completa el nombre y cédula antes de cargar la imagen.
+            </p>
+
+            <div class="form-row">
+              <button type="submit" class="btn btn-primary" id="submitBtn" style="width:100%;">
+                <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m21 21-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/></svg>
+                Analizar
+              </button>
+            </div>
+          </div>
+
+          <!-- ── RIGHT: result ── -->
+          <div class="panel">
+            <div class="panel-label">03 — Resultado del análisis</div>
+
+            <div class="result-img-box">
+              {% if heatmap_image %}
+                <!-- Serve from dynamic /heatmaps/ route -->
+                <img src="/heatmaps/{{ heatmap_image }}" alt="Grad-CAM heatmap" />
+              {% else %}
+                <div class="result-placeholder">El mapa de calor<br>aparecerá aquí</div>
+              {% endif %}
+            </div>
+
+            <div class="verdict-row">
+              <div class="verdict-box {% if label == 'PNEUMONIA' %}positive{% elif label %}negative{% endif %}">
+                <div class="vb-label">Diagnóstico</div>
+                <div class="vb-value">
+                  {% if label %}{{ label }}{% else %}—{% endif %}
+                </div>
+              </div>
+              <div class="verdict-box {% if probability %}{% if probability|float > 70 %}positive{% else %}negative{% endif %}{% endif %}">
+                <div class="vb-label">Confianza en el modelo</div>
+                <div class="vb-value">
+                  {% if probability %}{{ probability }}%{% else %}—{% endif %}
+                </div>
+                {% if probability %}
+                <div class="prob-bar-wrap">
+                  <div class="prob-bar prob-bar--{{ prob_class }}"
+                        style="--w: {{ probability }}%;">
+                </div>
+                </div>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- ── footer ── -->
+        <div class="card-footer">
+          <span class="footer-info">
+            {% if label %}
+              Analizado · {{ patient_name or '' }} {% if patient_id %}({{ patient_id }}){% endif %}
+            {% else %}
+              Listo para analizar
+            {% endif %}
+          </span>
+
+          {% if label %}
+          <a href="/export-pdf?patient_id={{ patient_id }}&amp;patient_name={{ patient_name }}&amp;label={{ label }}&amp;probability={{ probability }}&amp;image={{ image }}&amp;heatmap={{ heatmap_image }}"
+             class="btn btn-primary" style="text-decoration:none;">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M7.5 10.5 12 15m0 0 4.5-4.5M12 15V3"/></svg>
+            Descargar PDF
+          </a>
+          <a href="/export-csv?patient_id={{ patient_id }}&amp;label={{ label }}&amp;probability={{ probability }}"
+             class="btn btn-ghost" style="text-decoration:none;">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M7.5 10.5 12 15m0 0 4.5-4.5M12 15V3"/></svg>
+            Exportar CSV
+          </a>
+          {% endif %}
+
+          <a href="/" class="btn btn-ghost" style="text-decoration:none;">
+            Nueva imagen
+          </a>
+        </div>
+      </form>
+    </div>
+
+    <p class="disclaimer">
+      ⚠️ Esta herramienta es un sistema de <strong>apoyo</strong> al diagnóstico.<br>
+      No reemplaza el criterio clínico de un médico especialista.
+    </p>
+  </div>
+
+  <script>
+    // ── validar que nombre y cédula estén llenos antes de permitir cargar imagen ──
+    function handleDropZoneClick() {
+      const name = document.getElementById('patientName').value.trim();
+      const id   = document.getElementById('patientId').value.trim();
+      if (!name || !id) {
+        document.getElementById('patientName').style.borderColor = name ? 'var(--border)' : 'var(--danger)';
+        document.getElementById('patientId').style.borderColor   = id   ? 'var(--border)' : 'var(--danger)';
+        const hint = document.getElementById('validationHint');
+        hint.style.display = 'block';
+        return;
+      }
+      document.getElementById('fileInput').click();
+    }
+
+    // ── drag & drop visual feedback ──
+    const zone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+
+    zone.addEventListener('dragover', e => {
+      e.preventDefault();
+      const name = document.getElementById('patientName').value.trim();
+      const id   = document.getElementById('patientId').value.trim();
+      if (name && id) zone.classList.add('dragover');
+    });
+    zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+    zone.addEventListener('drop', e => {
+      e.preventDefault();
+      zone.classList.remove('dragover');
+      const name = document.getElementById('patientName').value.trim();
+      const id   = document.getElementById('patientId').value.trim();
+      if (!name || !id) { handleDropZoneClick(); return; }
+      const file = e.dataTransfer.files[0];
+      if (file) {
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        fileInput.files = dt.files;
+        previewFile(file);
+      }
+    });
+
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files[0]) previewFile(fileInput.files[0]);
+    });
+
+    // limpiar error border al escribir
+    ['patientName','patientId'].forEach(id => {
+      document.getElementById(id).addEventListener('input', function() {
+        this.style.borderColor = 'var(--border)';
+        document.getElementById('validationHint').style.display = 'none';
+      });
+    });
+
+    function previewFile(file) {
+      if (file.name.endsWith('.dcm')) {
+        zone.innerHTML = `<p class="drop-text"><strong>${file.name}</strong><br><span style="font-family:'DM Mono',monospace;font-size:11px;color:var(--muted)">Archivo DICOM listo</span></p>`;
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = e => {
+        zone.innerHTML = `<img src="${e.target.result}" alt="preview" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;border-radius:12px;" />`;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    // ── loading spinner on submit ──
+    document.getElementById('mainForm').addEventListener('submit', (e) => {
+      const name = document.getElementById('patientName').value.trim();
+      const id   = document.getElementById('patientId').value.trim();
+      if (!name || !id) { e.preventDefault(); handleDropZoneClick(); return; }
+      const btn = document.getElementById('submitBtn');
+      btn.innerHTML = '<div class="spinner"></div> Analizando…';
+      btn.disabled = true;
+    });
+  </script>
+</body>
+</html>
