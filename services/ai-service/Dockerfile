@@ -30,10 +30,10 @@ EXPOSE 8000
 
 # Single worker with 4 threads — TensorFlow graph is thread-safe but not fork-safe.
 # Use --preload so the model loads once before Gunicorn forks (if workers > 1).
+# sync worker, no --preload: TF loads inside the worker after fork (fork-safe)
 CMD ["gunicorn", \
      "--bind", "0.0.0.0:8000", \
+     "--worker-class", "sync", \
      "--workers", "1", \
-     "--threads", "4", \
      "--timeout", "300", \
-     "--preload", \
      "app:app"]
